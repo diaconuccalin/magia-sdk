@@ -2,8 +2,6 @@ name: Format Check
 
 on:
   push:
-    branches:
-      - main
   pull_request:
   workflow_dispatch:
 
@@ -11,6 +9,10 @@ jobs:
   clang-format:
     name: clang-format (changed files vs main)
     runs-on: ubuntu-latest
+    # Avoid duplicate runs: for same-repo PRs the push event already covers
+    # the head SHA, so skip pull_request there. Forked PRs don't trigger push
+    # on the upstream repo, so we still run pull_request for them.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     steps:
       - uses: actions/checkout@v4
         with:
