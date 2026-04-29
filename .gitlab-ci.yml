@@ -44,7 +44,7 @@ python_gvsoc:
     - python -m venv gvsoc_venv
     - source gvsoc_venv/bin/activate && pip install .
     - source gvsoc_venv/bin/activate && pip install torch --index-url https://download.pytorch.org/whl/cpu
-    - source gvsoc_venv/bin/activate && make gemm-gen
+    - source gvsoc_venv/bin/activate && bash scripts/gemm/gemm-gen.sh
   artifacts:
     paths: [ "gvsoc_venv", "tests/magia/mesh/gemm/via_l2/include/test.h" ]
 

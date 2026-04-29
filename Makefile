@@ -48,16 +48,6 @@ ISA				?= rv32imcxgap9
 gui 			?= 0
 tiles 			?= 2
 
-# GEMM chain pipeline parameters
-dim_a            ?= 4
-dim_b            ?= 8
-dim_c            ?= 16
-dim_d            ?= 32
-dim_e            ?= 64
-dim_f            ?= 128
-seed			 ?= 42
-gemm_platform    ?= gvsoc
-
 tiles_2 		:= $(shell echo $$(( $(tiles) * $(tiles) )))
 tiles_log    	:= $(shell awk 'BEGIN { printf "%.0f", log($(tiles_2))/log(2) }')
 tiles_log_real  := $(shell awk 'BEGIN { printf "%.0f", log($(tiles))/log(2) }')
@@ -65,7 +55,7 @@ tiles_log_real  := $(shell awk 'BEGIN { printf "%.0f", log($(tiles))/log(2) }')
 GVRUN ?= $(GVSOC_DIR)/install/bin/gvrun
 GVRUN_ARGS ?= --work-dir $(GVSOC_ABS_PATH)/Documents/test --attr magia_v2/n_tiles_x=$(tiles) --attr magia_v2/n_tiles_y=$(tiles) --trace-level=trace run --trace=kill-module
 
-.PHONY: gvsoc build gemm-test gemm-gen gemm-build gemm-run gemm-ci
+.PHONY: gvsoc build
 
 clean:
 	rm -rf build/
@@ -193,42 +183,3 @@ gvsoc_venv:
 	python -m venv gvsoc_venv && \
 	source gvsoc_venv/bin/activate && \
 	pip install .
-
-# ─── GEMM chain pipeline ────────────────────────────────────────────
-# Usage:
-#   make gemm-test tiles=2                           # default 8x8 dims
-#   make gemm-test tiles=2 dim_a=8 dim_b=12 dim_c=16 dim_d=8 dim_e=8 dim_f=12
-#   make gemm-gen  dim_a=16 dim_b=8 dim_c=8 dim_d=8 dim_e=8 dim_f=8
-#   make gemm-run  tiles=2 gemm_platform=rtl
-
-gemm-gen:
-	python3 tests/magia/mesh/gemm/via_l2/gen_golden.py \
-		--dim-a $(dim_a) --dim-b $(dim_b) --dim-c $(dim_c) \
-		--dim-d $(dim_d) --dim-e $(dim_e) --dim-f $(dim_f) --seed $(seed)
-
-gemm-build:
-	$(MAKE) clean
-	$(MAKE) build target_platform=magia_v2 tiles=$(tiles) compiler=$(compiler) eval=$(eval)
-
-gemm-run:
-	$(MAKE) run test=test_gemm platform=$(gemm_platform) tiles=$(tiles)
-
-gemm-test:
-	$(MAKE) gemm-gen dim_a=$(dim_a) dim_b=$(dim_b) dim_c=$(dim_c) \
-		dim_d=$(dim_d) dim_e=$(dim_e) dim_f=$(dim_f) seed=$(seed)
-	$(MAKE) gemm-build tiles=$(tiles) compiler=$(compiler) eval=$(eval)
-ifeq ($(gemm_platform), gvsoc)
-	$(MAKE) gvsoc tiles=$(tiles)
-endif
-	$(MAKE) gemm-run tiles=$(tiles) gemm_platform=$(gemm_platform)
-
-# ─── GEMM chain CI ──────────────────────────────────────────────────
-# Runs the GEMM chain test on an 8x8 mesh with default dimensions.
-#   make gemm-ci                        # on gvsoc (default)
-#   make gemm-ci gemm_platform=rtl      # on RTL
-
-gemm-ci:
-	@GEMM_PLATFORM=$(gemm_platform) COMPILER=$(compiler) EVAL=$(eval) \
-	 DIM_A=$(dim_a) DIM_B=$(dim_b) DIM_C=$(dim_c) \
-	 DIM_D=$(dim_d) DIM_E=$(dim_e) DIM_F=$(dim_f) SEED=$(seed) \
-	 bash scripts/gemm-ci.sh

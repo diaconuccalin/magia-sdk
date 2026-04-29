@@ -28,3 +28,6 @@ scripts/wave.do
 # Generated test inputs
 tests/magia/mesh/gemm/*/include/*
 
+# Editor
+.vscode/
+

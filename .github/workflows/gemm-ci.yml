@@ -79,14 +79,14 @@ jobs:
         run: make gvsoc tiles=8
 
       - name: Generate golden data
-        run: make gemm-gen
+        run: bash scripts/gemm/gemm-gen.sh
 
       - name: Build GEMM test
-        run: make gemm-build tiles=8 compiler=GCC_PULP
+        run: TILES=8 COMPILER=GCC_PULP bash scripts/gemm/gemm-build.sh
 
       - name: Run GEMM chain test (8x8 mesh)
         run: |
-          output=$(make gemm-run tiles=8 2>&1) || true
+          output=$(TILES=8 bash scripts/gemm/gemm-run.sh 2>&1) || true
           result=$(echo "$output" | grep -E 'Errors:|Test complete' || true)
           echo "$result"
           errors=$(echo "$output" | grep -oP 'Errors:\s*\K[0-9]+' | head -1)
