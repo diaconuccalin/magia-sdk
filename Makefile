@@ -55,7 +55,10 @@ tiles_log_real  := $(shell awk 'BEGIN { printf "%.0f", log($(tiles))/log(2) }')
 GVRUN ?= $(GVSOC_DIR)/install/bin/gvrun
 GVRUN_ARGS ?= --work-dir $(GVSOC_ABS_PATH)/Documents/test --attr magia_v2/n_tiles_x=$(tiles) --attr magia_v2/n_tiles_y=$(tiles) --trace-level=trace run --trace=kill-module
 
-.PHONY: gvsoc build
+.PHONY: gvsoc build format
+
+format:
+	@bash scripts/ci/format-changed.sh apply
 
 clean:
 	rm -rf build/
