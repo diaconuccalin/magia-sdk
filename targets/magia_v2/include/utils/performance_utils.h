@@ -24,6 +24,33 @@
 #define PERFORMANCE_UTILS_H
 
 /**
+ * @brief Starts all performance counters
+ */
+static inline void perf_start(void)
+{
+    // GVSoC: mcycle count unconditionally; PULP PCER/PCMR (0x7E0/0x7E1) are unmodeled, so do not
+    // touch them here.
+    asm volatile("csrw 0xB00, %0" : : "r"(0)); // mcycle
+}
+
+/**
+ * @brief Stops all performance counters
+ */
+static inline void perf_stop(void)
+{
+    asm volatile("csrw 0x320, %0" : : "r"(0xffffffff)); // mcountinhibit: stop standard counters
+}
+
+/**
+ * @brief Resets all performance counters to 0 without stopping them
+ */
+static inline void perf_reset(void)
+{
+    asm volatile("csrw 0xB00, %0" : : "r"(0));
+}
+
+
+/**
  * @brief Returns the cycles of the performance counter
  * !! WARNING !! AT THE MOMENT OF WRITING (06/05/2026) THIS PROFILING UTILITY ONLY WORKS ON GVSOC.
  * PLEASE USE THE TESTBENCH UTILITIES WHEN PROFILING ON RTL.
@@ -44,16 +71,19 @@ static inline unsigned int perf_get_cycles()
 /**
  * @brief Triggers the testbench on saving the current cycle count in a FILO buffer.
  */
+static inline unsigned int perf_get_instr()
+{
+    unsigned int value = 0;
+    asm volatile("csrr %0, 0xB02" : "=r"(value));
+    return value;
+}
+
+
 static inline void sentinel_start()
 {
     asm volatile("addi x0, x0, 0x5AA" ::);
 }
 
-/**
- * @brief Triggers the testbench on subtracting the current cycle count with the last saved value in
- * the FILO buffer, popping it from the buffer. If no value is stored (I.E. sentinel_end is called
- * without calling sentinel_start before), an error message is printed instead.
- */
 static inline void sentinel_end()
 {
     asm volatile("addi x0, x0, 0x5FF" ::);
@@ -159,37 +189,5 @@ static inline void stnl_r()
 {
     asm volatile("addi x0, x0, 0x5EE" ::);
 }
-
-// LEGACY PROFILING UTILITIES //
-// /**
-//  * @brief Starts all performance counters
-//  */
-// static inline void perf_start(void) {
-//     // enable all counters
-//     asm volatile("csrw 0x7E0, %0" :: "r"(0x1));  // Enable PCCR[0]
-//     asm volatile("csrw 0x7E1, %0" :: "r"(0x1));  // Enable counting, , no saturation
-// }
-
-// /**
-//  * @brief Stops all performance counters
-//  */
-// static inline void perf_stop(void) {
-//     asm volatile("csrw 0x320, %0" : : "r"(0xffffffff));
-// }
-
-// /**
-//  * @brief Resets all performance counters to 0 without stopping them
-//  */
-// static inline void perf_reset(void) {
-//     asm volatile("csrw 0xB00, %0" : : "r"(0));
-// }
-// /**
-//  * @brief Returns the n. instructions of the performance counter
-//  */
-// static inline unsigned int perf_get_instr(){
-//     unsigned int value = 0;
-//     asm volatile ("csrr %0, 0xB02" : "=r" (value));
-//     return value;
-// }
 
 #endif
