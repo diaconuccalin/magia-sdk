@@ -34,10 +34,20 @@
 #define MATRIX_R3            2u
 
 /*
- * 16 KB reserved at the start of each tile's L1 for the FIFO header,
- * linked-list nodes, and payload data. Workspace buffers follow after.
+ * Compute the per-tile FIFO reservation size from test dimensions so it
+ * scales automatically when the matrices grow.
+ *
+ * Worst case is a GEMM3 tile with:
+ *   num_slots  = ceil(DIM_A / GEMM3_N_TILES) + DIM_C
+ *   slot_stride = 16 (meta) + ceil(DIM_C * 0.2) * DIM_E * 2  (r2 payload dominates)
+ *
+ * DIM_C/5+1 is a conservative integer approximation of ceil(DIM_C * 0.2).
+ * Result is rounded up to the next 4 KB boundary.
  */
-#define FIFO_RESERVE_SIZE    0x4000u
+#define _FIFO_R2_BATCH       (DIM_C / 5 + 1)
+#define _FIFO_SLOT_STRIDE    (16u + (uint32_t)(_FIFO_R2_BATCH * DIM_E * 2))
+#define _FIFO_NUM_SLOTS_MAX  (2u + (uint32_t)DIM_C)
+#define FIFO_RESERVE_SIZE    ((16u + _FIFO_NUM_SLOTS_MAX * _FIFO_SLOT_STRIDE + 0xFFFu) & ~0xFFFu)
 
 /*
  * Fraction of a tile's rows to push per fifo_push_dma() call.
