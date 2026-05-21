@@ -131,6 +131,7 @@ endif
 ifeq (,$(wildcard $(CMAKE_BUILDDIR)/bin/$(test)))
 	$(error No test found with name: $(test))
 endif
+	mkdir -p $(GVSOC_ABS_PATH)/Documents/test
 	$(GVRUN) --target magia_v2 --param binary=$(BIN_ABS_PATH)/$(test) $(GVRUN_PROFILE_ARGS) $(PROFILE_TILE_ARG)
 
 MAGIA: set_mesh
