@@ -46,6 +46,38 @@ static inline void l1_zero_fp16(uint32_t base, uint32_t n_halfwords)
         p[i] = 0;
 }
 
+/* Compare `n_elems` fp16 elements at L1 address `base` against the golden
+ * `m2_inp` array in L2. The sandbox transfers are pure DMA copies, so the
+ * data must be bit-identical; compare the raw 16-bit patterns directly.
+ *
+ * Each volatile load is materialized into a uint16_t local *before* the
+ * comparison. This is load-bearing: the PULP GCC backend loads a
+ * `volatile uint16_t` with the signed `p.lh` instruction, and when the
+ * result feeds an arithmetic compare directly it skips the zero-extension,
+ * so every fp16 with bit 15 set (all negative values) is sign-extended and
+ * falsely reported as a mismatch. Assigning to a uint16_t local forces the
+ * `p.exthz` zero-extension and makes the compare correct. */
+static uint32_t check_against_m2(const char *label, uint32_t base, uint32_t n_elems)
+{
+    volatile uint16_t *got = (volatile uint16_t *)base;
+    const uint16_t *exp    = (const uint16_t *)m2_inp;
+    uint32_t errs          = 0;
+    for (uint32_t i = 0; i < n_elems; i++) {
+        uint16_t g = got[i];
+        uint16_t e = exp[i];
+        if (g != e) {
+            errs++;
+            if (errs <= 8)
+                printf("  %s: m2[%u] mismatch: got=0x%04x exp=0x%04x\n",
+                       label,
+                       i,
+                       g,
+                       e);
+        }
+    }
+    return errs;
+}
+
 int main(void)
 {
     /* ~~~~~~~~~~~~~~~~~~~~ 0. Initialization ~~~~~~~~~~~~~~~~~~~~ */
@@ -173,212 +205,47 @@ int main(void)
     //     eu_idma_wait_o2a(&eu_ctrl, WAIT_MODE);
     // }
 
-    /* ~~~~~~~~~~~~~~~~~~~~ Sandbox Testing ~~~~~~~~~~~~~~~~~~~~ */
-
-    /* Barrier: synchronize all tiles after GEMM1 before sandbox transfers */
-    fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
-    eu_fsync_wait(&eu_ctrl, WAIT_MODE);
+    /* ~~~~~~~~~~~~~~~~~~~~ Transfer Tests (one tile at a time) ~~~~~~~~~~~~~~~~~~~~ */
 
     uint32_t m2_size = (uint32_t)(DIM_B * DIM_C * 2);
 
-    // /* Xfer 1: L2 → tile 4 L1 */
-    // if (hartid == 4) {
-    //     idma_memcpy_1d(&idma_ctrl, 0, (uint32_t)m2_inp, get_l1_base(4), m2_size);
-    //     eu_idma_wait_a2o(&eu_ctrl, WAIT_MODE);
-    // }
-    // fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
-    // eu_fsync_wait(&eu_ctrl, WAIT_MODE);
+/* peer[i]: tile i transfers to/from this tile in the L1<->L1 steps.
+ * Derangement of {0..15}: no tile maps to itself. */
+    static const uint32_t peer[16] = {7, 13, 9, 14, 11, 0, 3, 15, 1, 6, 4, 12, 5, 8, 2, 10};
 
-    // /* Xfer 2: L2 → tile 12 L1 */
-    // if (hartid == 12) {
-    //     idma_memcpy_1d(&idma_ctrl, 0, (uint32_t)m2_inp, get_l1_base(12), m2_size);
-    //     eu_idma_wait_a2o(&eu_ctrl, WAIT_MODE);
-    // }
-    // fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
-    // eu_fsync_wait(&eu_ctrl, WAIT_MODE);
+    for (uint32_t t = 0; t < 1; t++) {
+        /* Transfer 1: L2 → own L1 */
+        if (hartid == t) {
+            idma_memcpy_1d(&idma_ctrl, 0, (uint32_t)m2_inp, l1_tile_base, m2_size);
+            eu_idma_wait_a2o(&eu_ctrl, WAIT_MODE);
+        }
+        fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
+        eu_fsync_wait(&eu_ctrl, WAIT_MODE);
 
-    // /* Xfer 3: L2 → tile 7 L1 */
-    // if (hartid == 7) {
-    //     idma_memcpy_1d(&idma_ctrl, 0, (uint32_t)m2_inp, get_l1_base(7), m2_size);
-    //     eu_idma_wait_a2o(&eu_ctrl, WAIT_MODE);
-    // }
-    // fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
-    // eu_fsync_wait(&eu_ctrl, WAIT_MODE);
+        /* Transfer 2: own L1 → peer L1 (push) */
+        if (hartid == t) {
+            idma_memcpy_1d(&idma_ctrl, 1, get_l1_base(peer[t]), l1_tile_base, m2_size);
+            eu_idma_wait_o2a(&eu_ctrl, WAIT_MODE);
+        }
+        fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
+        eu_fsync_wait(&eu_ctrl, WAIT_MODE);
 
-    // /* Xfers 4-10: tile 12 L1 → tiles {7,8,9,11,13,14,15} L1 */
-    // static const uint32_t scatter_dsts[] = {7, 8, 9, 11, 13, 14, 15};
-    // for (uint32_t k = 0; k < 7; k++) {
-    //     if (hartid == 12) {
-    //         idma_memcpy_1d(&idma_ctrl, 1, get_l1_base(scatter_dsts[k]), get_l1_base(12),
-    //         m2_size); eu_idma_wait_o2a(&eu_ctrl, WAIT_MODE);
-    //     }
-    //     fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
-    //     eu_fsync_wait(&eu_ctrl, WAIT_MODE);
-    // }
+        /* Transfer 3: peer L1 → own L1 (pull) */
+        if (hartid == t) {
+            idma_memcpy_1d(&idma_ctrl, 0, get_l1_base(peer[t]), l1_tile_base, m2_size);
+            eu_idma_wait_a2o(&eu_ctrl, WAIT_MODE);
+        }
+        fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
+        eu_fsync_wait(&eu_ctrl, WAIT_MODE);
 
-    // /* Xfer 11: tile 12 L1 → tile 15 L1, pulled exclusively by tile 15 */
-    // if (hartid == 15) {
-    //     idma_memcpy_1d(&idma_ctrl, 0, get_l1_base(12), get_l1_base(15), m2_size);
-    //     eu_idma_wait_a2o(&eu_ctrl, WAIT_MODE);
-    // }
-    // fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
-    // eu_fsync_wait(&eu_ctrl, WAIT_MODE);
-
-    // /* Xfer 12: tile 12 L1 → tile 15 L1, split in parallel:
-    //  *   tile 12 pushes first half (OBI→AXI, src=tile12 L1, dst=tile15 L1)
-    //  *   tile 15 pulls second half (AXI→OBI, src=tile12 L1 + half, dst=tile15 L1 + half) */
-    // uint32_t half = m2_size / 2;
-    // if (hartid == 12) {
-    //     idma_memcpy_1d(&idma_ctrl, 1, get_l1_base(15), get_l1_base(12), half);
-    //     eu_idma_wait_o2a(&eu_ctrl, WAIT_MODE);
-    // }
-    // if (hartid == 15) {
-    //     idma_memcpy_1d(&idma_ctrl, 0, get_l1_base(12) + half, get_l1_base(15) + half, half);
-    //     eu_idma_wait_a2o(&eu_ctrl, WAIT_MODE);
-    // }
-    // fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
-    // eu_fsync_wait(&eu_ctrl, WAIT_MODE);
-
-    /* Xfer A: L2 → tile 12 L1 */
-    if (hartid == 12) {
-        idma_memcpy_1d(&idma_ctrl, 0, (uint32_t)m2_inp, get_l1_base(12), m2_size);
-        eu_idma_wait_a2o(&eu_ctrl, WAIT_MODE);
+        /* Transfer 4: own L1 → L2 */
+        if (hartid == t) {
+            idma_memcpy_1d(&idma_ctrl, 1, (uint32_t)m2_inp, l1_tile_base, m2_size);
+            eu_idma_wait_o2a(&eu_ctrl, WAIT_MODE);
+        }
+        fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
+        eu_fsync_wait(&eu_ctrl, WAIT_MODE);
     }
-    fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
-    eu_fsync_wait(&eu_ctrl, WAIT_MODE);
 
-    /* Xfer A: L2 → tile 12 L1 */
-    if (hartid == 12) {
-        idma_memcpy_1d(&idma_ctrl, 0, (uint32_t)m2_inp, get_l1_base(12), m2_size);
-        eu_idma_wait_a2o(&eu_ctrl, WAIT_MODE);
-    }
-    fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
-    eu_fsync_wait(&eu_ctrl, WAIT_MODE);
-
-    /* Xfer B: L2 → tile 13 L1 */
-    // if (hartid == 13) {
-    //     idma_memcpy_1d(&idma_ctrl, 0, (uint32_t)m2_inp, get_l1_base(13), m2_size);
-    //     eu_idma_wait_a2o(&eu_ctrl, WAIT_MODE);
-    // }
-    // fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
-    // eu_fsync_wait(&eu_ctrl, WAIT_MODE);
-
-    /* Xfer C: tile 12 L1 → tile 13 L1, pushed by tile 12 */
-    if (hartid == 12) {
-        idma_memcpy_1d(&idma_ctrl, 1, get_l1_base(13), get_l1_base(12), m2_size);
-        eu_idma_wait_o2a(&eu_ctrl, WAIT_MODE);
-    }
-    fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
-    eu_fsync_wait(&eu_ctrl, WAIT_MODE);
-
-    /* Xfer D: tile 12 L1 → tile 13 L1, pulled by tile 13 */
-    // if (hartid == 13) {
-    //     idma_memcpy_1d(&idma_ctrl, 0, get_l1_base(12), get_l1_base(13), m2_size);
-    //     eu_idma_wait_a2o(&eu_ctrl, WAIT_MODE);
-    // }
-    // fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
-    // eu_fsync_wait(&eu_ctrl, WAIT_MODE);
-
-    /* Xfer E: tile 12 L1 → tile 13 L1, work split in half:
-     *   tile 12 pushes first half  (dir=1, src=tile12 L1,        dst=tile13 L1)
-     *   tile 13 pulls second half  (dir=0, src=tile12 L1 + half, dst=tile13 L1 + half) */
-    uint32_t half = m2_size / 2;
-    if (hartid == 12) {
-        idma_memcpy_1d(&idma_ctrl, 1, get_l1_base(13), get_l1_base(12), half);
-        eu_idma_wait_o2a(&eu_ctrl, WAIT_MODE);
-    }
-    if (hartid == 13) {
-        idma_memcpy_1d(&idma_ctrl, 0, get_l1_base(12) + half, get_l1_base(13) + half, half);
-        eu_idma_wait_a2o(&eu_ctrl, WAIT_MODE);
-    }
-    fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
-    eu_fsync_wait(&eu_ctrl, WAIT_MODE);
-
-    /* Xfer F: L2 → tile 14 L1 */
-    // if (hartid == 14) {
-    //     idma_memcpy_1d(&idma_ctrl, 0, (uint32_t)m2_inp, get_l1_base(14), m2_size);
-    //     eu_idma_wait_a2o(&eu_ctrl, WAIT_MODE);
-    // }
-    // fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
-    // eu_fsync_wait(&eu_ctrl, WAIT_MODE);
-
-    // /* Xfer G: L2 → tile 15 L1 */
-    // if (hartid == 15) {
-    //     idma_memcpy_1d(&idma_ctrl, 0, (uint32_t)m2_inp, get_l1_base(15), m2_size);
-    //     eu_idma_wait_a2o(&eu_ctrl, WAIT_MODE);
-    // }
-    // fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
-    // eu_fsync_wait(&eu_ctrl, WAIT_MODE);
-
-    // /* Xfer H: tile 14 L1 → tile 15 L1, pushed by tile 14 */
-    // if (hartid == 14) {
-    //     idma_memcpy_1d(&idma_ctrl, 1, get_l1_base(15), get_l1_base(14), m2_size);
-    //     eu_idma_wait_o2a(&eu_ctrl, WAIT_MODE);
-    // }
-    // fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
-    // eu_fsync_wait(&eu_ctrl, WAIT_MODE);
-
-    // /* Xfer I: tile 14 L1 → tile 15 L1, pulled by tile 15 */
-    // if (hartid == 15) {
-    //     idma_memcpy_1d(&idma_ctrl, 0, get_l1_base(14), get_l1_base(15), m2_size);
-    //     eu_idma_wait_a2o(&eu_ctrl, WAIT_MODE);
-    // }
-    // fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
-    // eu_fsync_wait(&eu_ctrl, WAIT_MODE);
-
-    // /* Xfer J: tile 14 L1 → tile 15 L1, work split in half:
-    //  *   tile 14 pushes first half  (dir=1, src=tile14 L1,        dst=tile15 L1)
-    //  *   tile 15 pulls second half  (dir=0, src=tile14 L1 + half, dst=tile15 L1 + half) */
-    // if (hartid == 14) {
-    //     idma_memcpy_1d(&idma_ctrl, 1, get_l1_base(15), get_l1_base(14), half);
-    //     eu_idma_wait_o2a(&eu_ctrl, WAIT_MODE);
-    // }
-    // if (hartid == 15) {
-    //     idma_memcpy_1d(&idma_ctrl, 0, get_l1_base(14) + half, get_l1_base(15) + half, half);
-    //     eu_idma_wait_a2o(&eu_ctrl, WAIT_MODE);
-    // }
-    fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
-    eu_fsync_wait(&eu_ctrl, WAIT_MODE);
-
-    /* ~~~~~~~~~~~~~~~~~~~~ Validation ~~~~~~~~~~~~~~~~~~~~ */
-    // Final barrier
-    fsync_sync_level(&fsync_ctrl, MAX_SYNC_LVL - 1, 0);
-    eu_fsync_wait(&eu_ctrl, WAIT_MODE);
-
-    // Tile 0 checks R1 against golden
-    uint32_t errors = 0;
-
-    // if (hartid == 0) {
-    //     for (uint32_t i = 0; i < DIM_A; i++) {
-    //         for (uint32_t j = 0; j < DIM_C; j++) {
-    //             float16 computed = *(volatile float16 *)(&r1_out[i * DIM_C + j]);
-    //             float16 expected = r1_golden[i * DIM_C + j];
-
-    //             uint16_t uc = *(uint16_t *)&computed;
-    //             uint16_t ue = *(uint16_t *)&expected;
-
-    //             int32_t vc = fp16_to_millis(uc);
-    //             int32_t ve = fp16_to_millis(ue);
-
-    //             int32_t abs_diff = vc - ve;
-    //             if (abs_diff < 0)
-    //                 abs_diff = -abs_diff;
-    //             if (abs_diff > abs_threshold_millis) {
-    //                 errors++;
-    //                 // printf("R1[%d][%d]: got=%f (0x%x) exp=%f (0x%x) (abs_diff=%ld)\n",
-    //                 //        i,
-    //                 //        j,
-    //                 //        fp16_to_f64(uc),
-    //                 //        uc,
-    //                 //        fp16_to_f64(ue),
-    //                 //        ue,
-    //                 //        (long)abs_diff);
-    //             }
-    //         }
-    //     }
-
-    //     printf("\nTest complete. Errors: %d / %d\n\n", errors, DIM_A * DIM_C);
-    // }
-
-    return errors;
+    return 0;
 }
